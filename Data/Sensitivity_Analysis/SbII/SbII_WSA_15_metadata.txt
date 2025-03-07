@@ -1,0 +1,6 @@
+Date: 2025-03-07 16:07:13.974746
+Files combined:
+sLD.tif with weight 0.4
+sPK.tif with weight 0.2
+sPm.tif with weight 0.25
+sPo.tif with weight 0.15

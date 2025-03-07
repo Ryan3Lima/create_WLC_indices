@@ -1,5 +1,0 @@
-Date: 2025-03-06 16:42:38.407814
-Files combined:
-sPK.tif with weight 0.3333333333333333
-sPm.tif with weight 0.3333333333333333
-sPo.tif with weight 0.3333333333333333

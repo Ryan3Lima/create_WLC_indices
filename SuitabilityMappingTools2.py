@@ -37,21 +37,10 @@ def plot_layers(data_dir):
 
     # Set up the plot
     num_files = len(raster_files)
-    if num_files == 0:
-        print("No raster files found in the directory.")
-        return
+    fig, axes = plt.subplots(1, num_files, figsize=(15, 5))
 
-        # Set up the plot
-    if num_files > 3:
-        cols = int(np.ceil(np.sqrt(num_files)))  # Number of columns
-        rows = int(np.ceil(num_files / cols))  # Number of rows
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
-        axes = axes.flatten()  # Flatten for easier indexing
-    elif num_files > 1:
-        fig, axes = plt.subplots(1, num_files, figsize=(num_files * 5, 5))
-    else:
-        fig, axes = plt.subplots(1, 1, figsize=(5, 5))
-        axes = [axes]  # Wrap single axis in a list for consistent handling
+    if num_files == 1:
+        axes = [axes]
 
     for ax, raster_file in zip(axes, raster_files):
         with rasterio.open(os.path.join(data_dir, raster_file)) as src:
@@ -313,11 +302,7 @@ def plot_histogram(filepath, weights):
         fig, ax = plt.subplots()
         counts, bins, patches = ax.hist(data, bins=bins, edgecolor='black')
 
-        # Add vertical line for nanmean CHANGE HERE ###################################
-        nanmean = np.nanmean(data)
-        ax.axvline(nanmean, color='red', linestyle='--', label=f'Nanmean: {nanmean:.2f}')
-        ax.legend()
-        #############################
+
         ax.set_title(f"Histogram of {os.path.basename(filepath)}: {weights}")
         ax.set_xlabel("Value")
         ax.set_ylabel("Frequency (thousands of pixels)")
@@ -475,7 +460,7 @@ def sensitivity_analysis_weights(files_list_dic, run_name):
     Conducts sensitivity analysis by shuffling weights and computing weighted suitability maps.
     """
 
-    sensitivity_dir = os.path.join(os.path.dirname(files_list_dic[0]['Filepath']), "Sensitivity_Analysis", run_name)
+    sensitivity_dir = os.path.join(os.path.dirname(files_list_dic[0]['Filepath']), "Sensitivity_Analysis")
     os.makedirs(sensitivity_dir, exist_ok=True)
 
     file_names = [file_info['File'] for file_info in files_list_dic]
@@ -515,13 +500,12 @@ def sensitivity_analysis_weights(files_list_dic, run_name):
 
         results.append([output_filename] + list(weight_set) + [percent_above_5, percent_above_6, percent_above_7, nanmean_value])
 
+    # Save results
     results_df = pd.DataFrame(results, columns=["File", *file_names, "% > 5", "% > 6", "% > 7", "Mean"])
+    results_txt_path = os.path.join(sensitivity_dir, f"{run_name}_WSA_results.txt")
+    results_df.to_csv(results_txt_path, sep="\t", index=False)
 
-    # Save as a single combined CSV file
-    results_csv_path = os.path.join(sensitivity_dir, f"{run_name}_WSA_combined_results.csv")
-    results_df.to_csv(results_csv_path, index=False)
-
-    print(f"✅ Sensitivity analysis completed. Results saved at: {results_csv_path}")
+    print(f"✅ Sensitivity analysis completed. Results saved at: {results_txt_path}")
 #------------------------------
 def sensitivity_analysis_removal(files_list_dic, run_name):
     """
@@ -534,25 +518,27 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
         return
 
     # ✅ Ensure Sensitivity_Analysis directory exists
-    sensitivity_dir = os.path.join(os.path.dirname(files_list_dic[0]['Filepath']), "Sensitivity_Analysis", run_name)
+    sensitivity_dir = os.path.join(os.path.dirname(files_list_dic[0]['Filepath']), "Sensitivity_Analysis")
     os.makedirs(sensitivity_dir, exist_ok=True)
 
+    # ✅ Ensure define_weights() returns a valid list
+    control_weights = define_weights(files_list_dic, False)
+
+    if control_weights is None or not isinstance(control_weights, list) or len(control_weights) == 0:
+        print(f"❌ ERROR: `define_weights()` returned an invalid list. Check input files.")
+        return
+
     # ✅ Control scenario with all variables equally weighted
-    num_files = len(files_list_dic)
-    for file_info in files_list_dic:
-        file_info['Weight'] = 1 / num_files
-
-
     control_output_filename = f"{run_name}_RM_control.tif"
     print(f"Generating control scenario: {control_output_filename}")
 
-    control_output_path = create_weighted_index(files_list_dic, control_output_filename, sensitivity_dir)
+    control_output_path = create_weighted_index(control_weights, control_output_filename, sensitivity_dir)
 
     if control_output_path is None or not os.path.exists(control_output_path):
         print(f"❌ ERROR: Expected control file {control_output_filename} was not created. Skipping analysis.")
         return
 
-    plot_histogram(filepath=control_output_path, weights="Control")
+    plot_histogram(filepath=control_output_path,weights= remov)  # ✅ Plot histogram for control scenario
 
     # ✅ Read and analyze control raster
     with rasterio.open(control_output_path) as src:
@@ -566,25 +552,26 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
         d[d == -9999] = np.nan
         control_nanmean_value = np.nanmean(d)
 
-    # ✅ Store control results
-    results = []  # Initialize empty list for storing all results
-    results.append(
-        ["Control", control_percent_above_5, control_percent_above_6, control_percent_above_7, control_nanmean_value])
+    results = [
+        ["Control", control_percent_above_5, control_percent_above_6, control_percent_above_7, control_nanmean_value]
+    ]
 
     # ✅ Remove each variable one at a time
     for removed_file in files_list_dic:
         remaining_files = [f for f in files_list_dic if f != removed_file]
         remov = removed_file
 
-        # ✅ Reweight remaining files so that they sum to 1
-        num_remaining = len(remaining_files)
-        for file_info in remaining_files:
-            file_info['Weight'] = 1 / num_remaining
+        # ✅ Ensure valid weights after removal
+        adjusted_weights = define_weights(remaining_files)
+
+        if adjusted_weights is None or len(adjusted_weights) == 0:
+            print(f"❌ ERROR: No valid weights after removing {removed_file['File']}. Skipping.")
+            continue
 
         output_filename = f"{run_name}_RM_{removed_file['File'].replace('.tif', '')}.tif"
         print(f"Generating scenario without {removed_file['File']} -> {output_filename}")
 
-        output_path = create_weighted_index(remaining_files, output_filename, sensitivity_dir)
+        output_path = create_weighted_index(adjusted_weights, output_filename, sensitivity_dir)
 
         if output_path is None or not os.path.exists(output_path):
             print(f"❌ ERROR: Expected file {output_filename} was not created. Skipping.")
@@ -613,11 +600,10 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
     print("\nSensitivity Analysis Results:")
     print(results_df)
 
-    # Save as a single combined CSV file
-    results_csv_path = os.path.join(sensitivity_dir, f"{run_name}_RM_combined_results.csv")
-    results_df.to_csv(results_csv_path, index=False)
+    results_txt_path = os.path.join(sensitivity_dir, f"{run_name}_RM_results.txt")
+    results_df.to_csv(results_txt_path, sep="\t", index=False)
 
-    print(f"\n✅ Sensitivity analysis completed. Results saved at: {results_csv_path}")
+    print(f"\n✅ Sensitivity analysis completed. Results saved at: {results_txt_path}")
 ####################### testing --------------------------------------------------
 
 print("SuitabilityMappingTools has been loaded")
