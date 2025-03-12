@@ -1,4 +1,4 @@
-Date: 2025-03-07 16:07:12.102012
+Date: 2025-03-12 14:26:43.813281
 Files combined:
 sLD.tif with weight 0.15
 sPK.tif with weight 0.2

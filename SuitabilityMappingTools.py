@@ -17,18 +17,10 @@ import rasterio
 import itertools
 import numpy as np
 import matplotlib.pyplot as plt
-from rasterio.plot import plotting_extent
 import pandas as pd
-from rasterio.warp import reproject, Resampling
-import rasterio
-from rasterio.plot import show, plotting_extent
+from rasterio.warp import reproject
 from rasterio.enums import Resampling
-import os
-import glob
-from rasterio.plot import show
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-import matplotlib.font_manager as fm
-import seaborn as sns
+import copy
 
 # Functions---------------------------------
 def plot_layers(data_dir):
@@ -60,8 +52,14 @@ def plot_layers(data_dir):
             data = data.astype(float)
             data[data == src.nodata] = float('nan')
 
+            # Determine the colormap based on the filename
+            if raster_file.endswith(('_mean.tif', '_cv.tif', '_range.tif', '_std.tif')):
+                cmap = 'RdBu_r'  # Red to blue with red reflecting high values and blue reflecting low values
+            else:
+                cmap = 'BrBG'  # Default colormap
+
             # Plot the data with scaling based on min and max values
-            img = ax.imshow(data, cmap='BrBG', vmin=np.nanmin(data), vmax=np.nanmax(data))
+            img = ax.imshow(data, cmap=cmap, vmin=np.nanmin(data), vmax=np.nanmax(data))
             ax.set_title(os.path.basename(raster_file))
             fig.colorbar(img, ax=ax, orientation='vertical')
 
@@ -483,6 +481,7 @@ def sensitivity_analysis_weights(files_list_dic, run_name):
     weight_permutations = list(itertools.permutations(base_weights))
 
     results = []
+    output_files = []
 
     for i, weight_set in enumerate(weight_permutations):
         for j, file_info in enumerate(files_list_dic):
@@ -498,6 +497,9 @@ def sensitivity_analysis_weights(files_list_dic, run_name):
             print(f"❌ Error: Expected output file {output_filename} was not created.")
             continue  # Skip this iteration if the file wasn't created
 
+        # Save path to use for creating summary stats
+        output_files.append(output_path)
+
         # Analyze the newly created raster
         with rasterio.open(output_path) as src:
             data = src.read(1)
@@ -505,6 +507,9 @@ def sensitivity_analysis_weights(files_list_dic, run_name):
 
         if nodata is not None:
             data = data[data != nodata]  # Remove NoData values
+            if data.size == 0:
+                print(f"❌ Warning: No valid data in {output_filename}. Skipping.")
+                continue
 
         percent_above_5 = np.mean(data > 5) * 100
         percent_above_6 = np.mean(data > 6) * 100
@@ -515,13 +520,13 @@ def sensitivity_analysis_weights(files_list_dic, run_name):
 
         results.append([output_filename] + list(weight_set) + [percent_above_5, percent_above_6, percent_above_7, nanmean_value])
 
-    results_df = pd.DataFrame(results, columns=["File", *file_names, "% > 5", "% > 6", "% > 7", "Mean"])
 
-    # Save as a single combined CSV file
+    results_df = pd.DataFrame(results, columns=["File", *file_names, "% > 5", "% > 6", "% > 7", "Mean"])
     results_csv_path = os.path.join(sensitivity_dir, f"{run_name}_WSA_combined_results.csv")
     results_df.to_csv(results_csv_path, index=False)
 
     print(f"✅ Sensitivity analysis completed. Results saved at: {results_csv_path}")
+    return output_files, sensitivity_dir, run_name
 #------------------------------
 def sensitivity_analysis_removal(files_list_dic, run_name):
     """
@@ -539,7 +544,10 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
 
     # ✅ Control scenario with all variables equally weighted
     num_files = len(files_list_dic)
-    for file_info in files_list_dic:
+
+    files_list_copy = copy.deepcopy(files_list_dic)
+
+    for j, file_info in enumerate(files_list_copy):
         file_info['Weight'] = 1 / num_files
 
 
@@ -558,6 +566,9 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
     with rasterio.open(control_output_path) as src:
         data = src.read(1)
         data = data[~np.isnan(data)]
+        if data.size == 0:
+            print(f"❌ Warning: No valid data in {control_output_path}. Skipping.")
+            return
 
         control_percent_above_5 = np.mean(data > 5) * 100
         control_percent_above_6 = np.mean(data > 6) * 100
@@ -571,6 +582,9 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
     results.append(
         ["Control", control_percent_above_5, control_percent_above_6, control_percent_above_7, control_nanmean_value])
 
+    # ✅ Track created rasters
+    output_files = [control_output_path]
+
     # ✅ Remove each variable one at a time
     for removed_file in files_list_dic:
         remaining_files = [f for f in files_list_dic if f != removed_file]
@@ -580,6 +594,8 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
         num_remaining = len(remaining_files)
         for file_info in remaining_files:
             file_info['Weight'] = 1 / num_remaining
+            if num_remaining == 0:
+                num_remaining = 1e-6  # Add small epsilon to avoid division by zero
 
         output_filename = f"{run_name}_RM_{removed_file['File'].replace('.tif', '')}.tif"
         print(f"Generating scenario without {removed_file['File']} -> {output_filename}")
@@ -590,12 +606,17 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
             print(f"❌ ERROR: Expected file {output_filename} was not created. Skipping.")
             continue
 
+        output_files.append(output_path)
+
         plot_histogram(output_path,remov)  # ✅ Plot histogram for removed-variable scenario
 
         # ✅ Read and analyze output raster
         with rasterio.open(output_path) as src:
             data = src.read(1)
             data = data[~np.isnan(data)]
+            if data.size == 0:
+                print(f"❌ Warning: No valid data in {output_filename}. Skipping.")
+                continue
 
             percent_above_5 = np.mean(data > 5) * 100
             percent_above_6 = np.mean(data > 6) * 100
@@ -618,6 +639,208 @@ def sensitivity_analysis_removal(files_list_dic, run_name):
     results_df.to_csv(results_csv_path, index=False)
 
     print(f"\n✅ Sensitivity analysis completed. Results saved at: {results_csv_path}")
+    return output_files, sensitivity_dir, run_name
+#-------------------------------------------------------
+def generate_summary_markdown(mean_raster,std_raster,range_raster,cv_raster,sensitivity_dir,run_name, mode = "w"):
+    """
+    Generates a markdown table summarizing the min, max, and mean values of the summary rasters.
+    """
+    # ✅ Mask NoData values (-9999) or other large negative placeholders
+    mean_raster1 = np.where(mean_raster == -9999, np.nan, mean_raster)
+    std_raster1 = np.where(std_raster == -9999, np.nan, std_raster)
+    range_raster1 = np.where(range_raster == -9999, np.nan, range_raster)
+    cv_raster1 = np.where(cv_raster == -9999, np.nan, cv_raster)
+    stats = {
+        'Raster': ['Mean', 'Standard Deviation', 'Range', 'Coefficient of Variation'],
+        'Min': [
+            np.nanmin(mean_raster1),
+            np.nanmin(std_raster1),
+            np.nanmin(range_raster1),
+            np.nanmin(cv_raster1)
+        ],
+        'Max': [
+            np.nanmax(mean_raster1),
+            np.nanmax(std_raster1),
+            np.nanmax(range_raster1),
+            np.nanmax(cv_raster1)
+        ],
+        'Mean': [
+            np.nanmean(mean_raster1),
+            np.nanmean(std_raster1),
+            np.nanmean(range_raster1),
+            np.nanmean(cv_raster1)
+        ]
+    }
+
+    # Convert to DataFrame
+    df = pd.DataFrame(stats)
+
+    # Format as markdown
+    markdown_table = df.to_markdown(index=False, tablefmt="pipe")
+
+    match mode:
+        case 'w':
+            # Define output file path
+            output_path = os.path.join(sensitivity_dir, f"{run_name}_w_summary_stats.md")
+        case 'r':
+            # Define output file path
+            output_path = os.path.join(sensitivity_dir, f"{run_name}_r_summary_stats.md")
+
+    # Write to file
+    with open(output_path, 'w') as f:
+        f.write(f"## Summary Statistics for {mode}-{run_name}\n\n")
+        f.write(markdown_table)
+        f.write("\n\n")
+
+    print(f"✅ Summary statistics markdown table saved at: {output_path}")
+#-------------------------------------------------------
+def generate_summary_rasters(output_files, sensitivity_dir, run_name, mode = 'w'):
+    """
+        Generates summary rasters (mean, standard deviation, range, CV) from a list of input rasters.
+
+        Args:
+            output_files (list): List of file paths to raster files.
+            sensitivity_dir (str): Path to the directory where output rasters will be saved.
+            run_name (str): Name for the run (used in output file names).
+            mode (str, optional): sensitivity analysis mode of input ('w' for weights, 'r' for removal). Defaults to 'w'.
+
+        Returns:
+            None
+        """
+    # Read all rasters and stack into 3D array
+    stack = []
+    profile = None
+
+    for path in output_files:
+        with rasterio.open(path) as src:
+            if profile is None:
+                profile = src.profile.copy()
+            data = src.read(1).astype(np.float32)
+
+            # ✅ Mask NoData values (but keep it as NaN, don't zero it out yet)
+            nodata_value = src.nodata
+            if nodata_value is not None:
+                data = np.where(data == nodata_value, np.nan, data)
+
+            stack.append(data)
+
+    stack = np.stack(stack)
+
+    # ✅ Check if stack is empty before proceeding
+    if stack.size == 0 or np.all(np.isnan(stack)):
+        raise ValueError("Stack is empty or contains only NaN values.")
+
+    # ✅ Check for consistent raster shapes
+    for i, data in enumerate(stack):
+        if data.shape != stack[0].shape:
+            raise ValueError(f"Raster at index {i} has mismatched shape: {data.shape}")
+
+    # ✅ Calculate summary statistics
+    mean_raster = np.nanmean(stack, axis=0)
+    std_raster = np.nanstd(stack, axis=0)
+    range_raster = np.nanmax(stack, axis=0) - np.nanmin(stack, axis=0)
+
+    # ✅ Handle division by zero in CV calculation
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cv_raster = np.divide(std_raster, mean_raster, where=(mean_raster != 0))
+        cv_raster[~np.isfinite(cv_raster)] = -9999  # Replace NaN and inf with -9999
+
+    ## ✅ Mask the results where mean_raster is NaN (AFTER computing stats)
+    #mean_raster = np.where(np.isnan(mean_raster), -9999, mean_raster)
+    #std_raster = np.where(np.isnan(std_raster), -9999, std_raster)
+    #range_raster = np.where(np.isnan(range_raster), -9999, range_raster)
+    #cv_raster = np.where(np.isnan(cv_raster), -9999, cv_raster)
+
+    # ✅ Function to save rasters
+    def save_raster(data, name, profile):
+        output_path = os.path.join(sensitivity_dir, f"{run_name}_{name}.tif")
+        profile.update(dtype=rasterio.float32, nodata=-9999)
+        with rasterio.open(output_path, 'w', **profile) as dst:
+            dst.write(data, 1)
+        print(f"✅ {name} raster saved at: {output_path}")
+
+    # ✅ Set output filename prefix
+    prf = "w" if mode == 'w' else "r"
+
+    # ✅ Save rasters
+    save_raster(mean_raster, f"{prf}_mean", profile)
+    save_raster(std_raster, f"{prf}_std", profile)
+    save_raster(range_raster, f"{prf}_range", profile)
+    save_raster(cv_raster, f"{prf}_cv", profile)
+
+    # ✅ Generate markdown summary after fixing NoData handling
+    generate_summary_markdown(mean_raster, std_raster, range_raster, cv_raster, sensitivity_dir, run_name, prf)
+#-----------------------------------------------------------
+def generate_markdown_from_csv(csv_filepath, index_name):
+    """
+    Generate markdown tables from a combined results CSV file.
+
+    Args:
+        csv_filepath (str): Path to the combined results CSV file.
+        index_name (str): Name of the sensitivity index (e.g., VDI, SMII, SbII, Final).
+
+    Returns:
+        str: Path to the generated markdown file.
+    """
+    # ✅ Read the CSV into a DataFrame
+    df = pd.read_csv(csv_filepath)
+
+    # ✅ Define output markdown path
+    output_path = csv_filepath.replace('.csv', '_tables.md')
+
+    # ✅ Create the markdown table for weight permutations
+    header = f"## Sensitivity analysis on {index_name} where variable weights were swapped\n\n"
+    table = df.to_markdown(index=False, tablefmt="pipe")
+
+    # ✅ Bold the first row (assuming it's the primary analysis)
+    table = table.replace(df.iloc[0, 0], f"**{df.iloc[0, 0]}**")
+    for col in df.columns[1:]:
+        table = table.replace(str(df.iloc[0][col]), f"**{df.iloc[0][col]}**")
+
+    # ✅ Add a descriptive caption
+    caption = f"\n: Sensitivity analysis on {index_name} with swapped variable weights. " \
+              f"The values from the row in bold were used in the primary analysis.\n"
+
+    # ✅ Create the markdown table for removal scenarios if applicable
+    if 'Removed Variable' in df.columns:
+        removal_header = f"\n## Sensitivity analysis on {index_name} with removal of variables (OAT)\n\n"
+        removal_table = df.to_markdown(index=False, tablefmt="pipe")
+
+        # Bold the "None" row (assuming it's the baseline)
+        removal_table = removal_table.replace('None', '**None**')
+        for col in df.columns[1:]:
+            baseline_row = df.loc[df['Removed Variable'].str.lower() == 'none']
+            if not baseline_row.empty:
+                for c in df.columns[1:]:
+                    removal_table = removal_table.replace(
+                        str(baseline_row[c].values[0]),
+                        f"**{baseline_row[c].values[0]}**"
+                    )
+
+        removal_caption = f"\n: Sensitivity analysis on {index_name} with removal of variables One-at-a-Time (OAT). " \
+                          f"The values from the row in bold were used in the primary analysis.\n"
+    else:
+        removal_header = ""
+        removal_table = ""
+        removal_caption = ""
+
+    # ✅ Write to markdown file
+    with open(output_path, 'w') as f:
+        f.write(header)
+        f.write(table)
+        f.write(caption)
+        if removal_header:
+            f.write(removal_header)
+            f.write(removal_table)
+            f.write(removal_caption)
+
+    print(f"✅ Markdown table saved at: {output_path}")
+    return output_path
 ####################### testing --------------------------------------------------
 
 print("SuitabilityMappingTools has been loaded")
+
+
+# test generate_markdown_from_csv()
+#path = r'Data/Sensitivity_Analysis/SbII/SbII_RM_combined_results.csv'
+#generate_markdown_from_csv(path,'SbII')
