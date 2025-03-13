@@ -288,42 +288,55 @@ def check_weights(files_list_dic):
 
     print("If weights are incorrect, run define_wights() function to change")
 #---------------------------------------
-def plot_histogram(filepath, weights):
+def plot_histogram(filepath, title):
     """
-    This function loads a raster file, plots a histogram of values with 10 bins between 1 and 10,
-    provides a count of pixels excluding no-data pixels, and calculates the percentage of pixels
-    in each bin. The figure is saved as a .png file with the same basename as the filepath provided.
-    Additionally, it saves a markdown table as a .txt file showing the percentage of total pixels
-    (excluding no-data) in each bin, the count of pixels in each bin, and the min and max values of each bin.
+    Plots a histogram of raster values, excluding no-data values.
+
+    Args:
+        filepath (str): Path to the raster file.
+        title (str): Descriptive label for the plot.
     """
     with rasterio.open(filepath) as src:
-        data = src.read(1)
+        data = src.read(1).astype(np.float32)
         nodata = src.nodata
-
-        # Exclude no-data pixels
+        
+        # Handle NoData values properly
+        data = np.where(data == -9999, np.nan, data)  # Treat -9999 as NoData
         if nodata is not None:
-            data = data[data != nodata]
+            data = np.where(data == nodata, np.nan, data)
 
-        # Define bins
+        # Remove small values (values < 0.9999)
+        data = np.where(data < 0.9999, np.nan, data)
+
+        # Remove NaN values BEFORE computing histogram
+        data = data[~np.isnan(data)]
+
+        # Ensure there are valid data points left
+        if data.size == 0:
+            print(f"❌ No valid data to plot for {os.path.basename(filepath)}.")
+            return
+
+        # Define bins for plotting
         bins = np.arange(0, 11, 1)
 
         # Plot histogram
         fig, ax = plt.subplots()
         counts, bins, patches = ax.hist(data, bins=bins, edgecolor='black')
 
-        # Add vertical line for nanmean CHANGE HERE ###################################
-        nanmean = np.nanmean(data)
-        ax.axvline(nanmean, color='red', linestyle='--', label=f'Nanmean: {nanmean:.2f}')
+        # Add vertical line for mean value
+        nanmean = np.nanmean(data)  # Use nanmean to handle NaN values
+        ax.axvline(nanmean, color='red', linestyle='--', label=f'Mean: {nanmean:.2f}')
         ax.legend()
-        #############################
-        ax.set_title(f"Histogram of {os.path.basename(filepath)}: {weights}")
+
+        # Format axes and labels
+        ax.set_title(f"Histogram of {os.path.basename(filepath)}: {title}")
         ax.set_xlabel("Value")
         ax.set_ylabel("Frequency (thousands of pixels)")
         ax.set_xticks(bins)
         ax.set_yticklabels([f'{int(label/1000)}k' for label in ax.get_yticks()])
 
-        # Count of pixels excluding no-data pixels
-        pixel_count = np.sum(data > 0.5)
+        # Count of valid pixels (excluding NoData)
+        pixel_count = data.size
 
         # Calculate percentages of pixels in each bin
         percentages = {int(bins[i]): (counts[i] / pixel_count) * 100 for i in range(len(counts))}
@@ -338,19 +351,25 @@ def plot_histogram(filepath, weights):
         with open(table_file, 'w') as f:
             f.write(f"# Histogram Data for {os.path.basename(filepath)}\n")
             f.write(f"Total count of pixels (excluding no-data): {pixel_count}\n\n")
-            f.write("| Bin | Count | Percentage of Total Pixels | Min Value | Max Value | Area ha |\n")
-            f.write("|-----|-------|----------------------------|-----------|-----------|---------|\n")
+            f.write("| Bin | Count | Percentage of Total Pixels | Min Value | Max Value | Area (ha) |\n")
+            f.write("|-----|-------|----------------------------|-----------|-----------|-----------|\n")
             for i in range(len(counts)):
                 bin_min = bins[i]
                 bin_max = bins[i + 1]
                 pixels = int(counts[i])
                 sqmet = pixels * 900
-                hectares = sqmet/10000
-                f.write(f"| {int(bins[i])} | {int(counts[i])} | {percentages[int(bins[i])]:.2f}% | {bin_min:.2f} | {bin_max:.2f} |{hectares}|\n")
+                hectares = sqmet / 10000
+                f.write(f"| {int(bins[i])} | {pixels} | {percentages[int(bins[i])]:.2f}% | {bin_min:.2f} | {bin_max:.2f} | {hectares:.2f} |\n")
 
+        print(f"✅ Histogram saved to {output_file}")
+        print(f"✅ Histogram data saved to {table_file}")
+
+        # ✅ Debug: Print out the histogram stats
         print(f"Count of pixels (excluding no-data pixels): {pixel_count}")
         for i in range(len(counts)):
-            print(f"Percentage of pixels in bin {int(bins[i])}: count = {int(counts[i])} :{percentages[int(bins[i])]:.2f}%")
+            print(f"Percentage of pixels in bin {int(bins[i])}: count = {int(counts[i])} : {percentages[int(bins[i])]:.2f}%")
+
+
 #-----------------------------------------
 def create_weighted_index(files_list_dic, output_file_name, output_file_directory=False, save_hist=True):
     """
@@ -401,7 +420,7 @@ def create_weighted_index(files_list_dic, output_file_name, output_file_director
 
         weighted_sum += np.nan_to_num(data) * weight
 
-    weighted_sum[weighted_sum < 0.001] = np.nan
+    weighted_sum[weighted_sum < 0.999] = np.nan
 
     # ✅ Ensure NoData handling before writing
     if np.isnan(weighted_sum).all():
