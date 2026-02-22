@@ -358,10 +358,5 @@ The full research framework extends beyond this repository and may include:
 
 ## Citation
 
-If using this workflow in academic work, cite the associated publication (when available) and describe any modifications made to the methodology.
+If using this workflow in academic work, cite this repository
 
----
-
-## License
-
-Specify the repository license here (e.g., MIT, GPL, BSD).
